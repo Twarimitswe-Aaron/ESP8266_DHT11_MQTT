@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aaron's IoT Command Center</title>
+
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.3.0/build/global/luxon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-streaming@2.0.0/dist/chartjs-plugin-streaming.min.js"></script>
+
+    <style>
+        :root {
+            --black: #000000;
+            --white: #ffffff;
+            --gray: #e0e0e0;
+            --accent: #ff3e00; /* Brutalist Orange */
+            --brutal-shadow: 8px 8px 0px 0px rgba(0,0,0,1);
+        }
+
+        body {
+            font-family: 'Space Grotesk', sans-serif;
+            background-color: var(--gray);
+            color: var(--black);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        /* Status Bar */
+        #status {
+            padding: 15px;
+            font-weight: 700;
+            text-transform: uppercase;
+            border: 4px solid var(--black);
+            margin-bottom: 20px;
+            background: var(--white);
+            box-shadow: var(--brutal-shadow);
+        }
+
+        .online { background-color: #00ff41 !important; }
+        .offline { background-color: #ff3131 !important; color: white; }
+
+        /* Grid Layout */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            margin-bottom: 25px;
+        }
+
+        .card {
+            background: var(--white);
+            border: 4px solid var(--black);
+            padding: 20px;
+            box-shadow: var(--brutal-shadow);
+        }
+
+        .card-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            border-bottom: 4px solid var(--black);
+            margin-bottom: 15px;
+            padding-bottom: 5px;
+        }
+
+        .metric {
+            font-size: 4rem;
+            font-weight: 700;
+            margin: 10px 0;
+        }
+
+        .unit { font-size: 1.5rem; }
+
+        /* Control Buttons */
+        .btn-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        button {
+            flex: 1;
+            padding: 15px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 700;
+            text-transform: uppercase;
+            cursor: pointer;
+            border: 4px solid var(--black);
+            background: var(--white);
+            box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
+            transition: 0.1s;
+        }
+
+        button:active {
+            transform: translate(2px, 2px);
+            box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        #led-on { background: #00ff41; }
+        #led-off { background: #ff3131; color: white; }
+
+        .chart-container {
+            height: 350px;
+            background: var(--white);
+            border: 4px solid var(--black);
+            padding: 20px;
+            box-shadow: var(--brutal-shadow);
+        }
+
+        .footer-info {
+            margin-top: 15px;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div id="status" class="offline">WAITING FOR MQTT...</div>
+
+    <div class="grid">
+        <div class="card">
+            <div class="card-title">Temperature</div>
+            <div class="metric"><span id="temp">--</span><span class="unit">°C</span></div>
+            <div id="last-update" class="footer-info">Last update: --</div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Humidity</div>
+            <div class="metric"><span id="hum">--</span><span class="unit">%</span></div>
+            <div class="footer-info">Data Packets: <span id="data-count">0</span></div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">LED Control</div>
+            <div style="font-size: 1.2rem; font-weight: 700;">
+                STATUS: <span id="led-status">UNKNOWN</span>
+            </div>
+            <div class="btn-group">
+                <button id="led-on" onclick="controlLED('ON')">ON</button>
+                <button id="led-off" onclick="controlLED('OFF')">OFF</button>
+            </div>
+            <div class="footer-info">Device ID: <span id="device-status">Loading...</span></div>
+        </div>
+    </div>
+
+    <div class="chart-container">
+        <canvas id="liveChart"></canvas>
+    </div>
+</div>
+
+<script>
+    // 1. MQTT CONFIGURATION - SPECIFIC TO aaron DEVICE
+    const broker = "broker.benax.rw";
+    const port = 9002;
+    const path = "/mqtt";
+    const clientID = "web_aaron_dashboard_" + Math.random().toString(16).substr(2, 8);
+
+    // aaron DEVICE SPECIFIC TOPICS
+    const TOPICS = {
+        DATA: "sensors_aaron/dht",
+        LED_CMD: "control_aaron/led", 
+        LED_STATUS: "control_aaron/led/status",
+        DEVICE_STATUS: "iot/status/esp8266_aaronba3fcb00"
+    };
+
+    const client = new Paho.MQTT.Client(broker, port, path, clientID);
+
+    // 2. CHART SETUP FOR CONTINUOUS STREAMING
+    const ctx = document.getElementById('liveChart').getContext('2d');
+    const chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            datasets: [
+                { 
+                    label: 'Temperature (°C)', 
+                    borderColor: '#000', 
+                    backgroundColor: 'rgba(0,0,0,0.05)', 
+                    data: [],
+                    tension: 0.4,
+                    borderWidth: 4,
+                    pointRadius: 0
+                },
+                { 
+                    label: 'Humidity (%)', 
+                    borderColor: '#666', 
+                    backgroundColor: 'rgba(102,102,102,0.05)', 
+                    data: [],
+                    tension: 0.4,
+                    borderWidth: 4,
+                    pointRadius: 0,
+                    borderDash: [5, 5]
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: 'realtime',
+                    realtime: {
+                        duration: 120000,
+                        refresh: 1000,
+                        delay: 2000
+                    },
+                    ticks: { color: '#000', font: { weight: 'bold' } }
+                },
+                y: {
+                    beginAtZero: true,
+                    max: 100,
+                    ticks: { color: '#000', font: { weight: 'bold' } }
+                }
+            }
+        }
+    });
+
+    // 3. MQTT CALLBACKS
+    let dataCount = 0;
+    let lastDataTime = Date.now();
+    
+    client.onMessageArrived = (msg) => {
+        const topic = msg.destinationName;
+        const payload = msg.payloadString;
+        
+        console.log(`📨 Received: ${topic} -> ${payload}`);
+
+        if (topic === TOPICS.DATA) {
+            try {
+                const data = JSON.parse(payload);
+                dataCount++;
+                
+                document.getElementById('temp').innerText = data.temperature;
+                document.getElementById('hum').innerText = data.humidity;
+                document.getElementById('data-count').innerText = dataCount;
+                
+                const timestamp = data.ts ? new Date(data.ts * 1000) : new Date();
+                document.getElementById('last-update').innerText = `Last update: ${timestamp.toLocaleTimeString()}`;
+
+                const now = Date.now();
+                chart.data.datasets[0].data.push({ x: now, y: data.temperature });
+                chart.data.datasets[1].data.push({ x: now, y: data.humidity });
+                chart.update('quiet');
+                
+                lastDataTime = Date.now();
+                
+                const statusDiv = document.getElementById('status');
+                statusDiv.innerText = "✅ CONNECTED - RECEIVING LIVE DATA";
+                statusDiv.className = "online";
+                
+            } catch (e) { 
+                console.error("❌ Data parsing error:", e); 
+            }
+        } 
+        else if (topic === TOPICS.LED_STATUS) {
+            document.getElementById('led-status').innerText = payload;
+        }
+        else if (topic === TOPICS.DEVICE_STATUS) {
+            document.getElementById('device-status').innerText = payload;
+        }
+    };
+
+    client.onConnectionLost = (err) => {
+        const statusDiv = document.getElementById('status');
+        statusDiv.innerText = "DISCONNECTED: RECONNECTING...";
+        statusDiv.className = "offline";
+        setTimeout(() => connect(), 5000);
+    };
+
+    // 4. CONNECTION LOGIC
+    const connectOptions = {
+        useSSL: true,
+        timeout: 3,
+        onSuccess: () => {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerText = "CONNECTED - MONITORING AARON DEVICE";
+            statusDiv.className = "online";
+            
+            client.subscribe(TOPICS.DATA);
+            client.subscribe(TOPICS.LED_STATUS);
+            client.subscribe(TOPICS.DEVICE_STATUS);
+        },
+        onFailure: (err) => {
+            document.getElementById('status').innerText = "RETRYING CONNECTION...";
+            setTimeout(() => connect(), 5000);
+        }
+    };
+
+    function connect() {
+        client.connect(connectOptions);
+    }
+
+    connect();
+
+    // 5. LED CONTROL FUNCTION
+    function controlLED(command) {
+        if (client.isConnected()) {
+            const message = new Paho.MQTT.Message(command);
+            message.destinationName = TOPICS.LED_CMD;
+            client.send(message);
+            
+            document.getElementById('led-status').innerText = `Sending ${command}...`;
+            
+            const buttons = document.querySelectorAll('button');
+            buttons.forEach(btn => btn.disabled = true);
+            setTimeout(() => {
+                buttons.forEach(btn => btn.disabled = false);
+            }, 2000);
+            
+        } else {
+            alert("MQTT not connected.");
+        }
+    }
+
+    // 6. WATCHDOG
+    setInterval(() => {
+        const timeSinceLastData = Date.now() - lastDataTime;
+        if (timeSinceLastData > 15000) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerText = "⚠️ WAITING FOR DATA FROM ESP8266...";
+            statusDiv.className = "offline";
+        }
+    }, 5000);
+</script>
+
+</body>
+</html>

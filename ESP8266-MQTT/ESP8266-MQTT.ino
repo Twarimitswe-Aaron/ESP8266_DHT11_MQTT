@@ -9,10 +9,10 @@ const char* password = "Huawei@123";
 const char* mqtt_server = "157.173.101.159";
 
 // Topics aligned with book's design [cite: 353, 457]
-#define TOPIC_DATA      "sensors/dht"
-#define TOPIC_LED_CMD   "control/led"
-#define TOPIC_LED_STATE "control/led/status"
-#define TOPIC_STATUS    "iot/status/esp8266_arduino"
+#define TOPIC_DATA      "sensors_aaron/dht"
+#define TOPIC_LED_CMD   "control_aaron/led"
+#define TOPIC_LED_STATE "control_aaron/led/status"
+#define TOPIC_STATUS    "iot/status/esp8266_aaronba3fcb00"
 
 /* ---------------- HARDWARE SETUP ---------------- */
 #define DHTPIN 5        // D1 (GPIO5) as per book's wiring [cite: 341]
